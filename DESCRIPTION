@@ -1,0 +1,12 @@
+Package: Rickersim
+Type: Package
+Title: Launching and Running the Ricker1 App Locally
+Version: 0.1.0
+Author: Matt Tyers
+Maintainer: The package maintainer <yourself@somewhere.net>
+Description: Launching and Running the Ricker1 App Locally.
+License: GPL-2
+Encoding: UTF-8
+LazyData: true
+RoxygenNote: 6.1.1
+Depends: shiny, car
