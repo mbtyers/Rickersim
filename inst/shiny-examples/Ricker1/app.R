@@ -7,6 +7,7 @@ ui <- fluidPage(
       h3("Inputs"),
       checkboxInput("showref","Show biological reference points",value=T),
       checkboxInput("sim","Simulate data"),
+      actionButton("sim1","generate new points..."),
 
       tabsetPanel(
         tabPanel("Ricker",
@@ -37,13 +38,14 @@ ui <- fluidPage(
                  # sliderInput("phi","Autocorrelation phi:", min=0, max=1, value=0, step=.01, ticks=T)
                  div(style="height: 70px;", sliderInput("N","Number of observations:", min=2, max=100, value=30, ticks=F)),
                  div(style="height: 70px;", sliderInput("sig","Process error lognormal sigma:", min=0, max=1, value=0.3, step=.01, ticks=F)),
-                 div(style="height: 70px;", sliderInput("hrange","Range of harvest rates:", min=0, max=1, value=c(0.5,0.9), step=.01, ticks=F)),
                  div(style="height: 70px;", sliderInput("cvS","Measurement error cv(S):", min=0, max=0.5, value=0, step=.01, ticks=F)),
-                 div(style="height: 70px;", sliderInput("phi","Autocorrelation phi:", min=0, max=1, value=0, step=.01, ticks=F))
+                 div(style="height: 70px;", sliderInput("phi","Autocorrelation phi:", min=0, max=1, value=0, step=.01, ticks=F)),
+                 div(style="height: 70px;", sliderInput("hrange","Harv rates: typical and liberalized", min=0, max=1, value=c(0.25,0.75), step=.01, ticks=F)),
+                 div(style="height: 70px;", sliderInput("Sgoal","S Goal for liberalization:", min=0, max=10000, value=2000, step=1, ticks=F)),
+                 div(style="height: 70px;", sliderInput("sigF","Harvest lognormal sigmaF:", min=0, max=1, value=0.4, step=.01, ticks=F))
         )
       ),
-      sliderInput("maxS","plot size:", min=0,max=50000,value=10000),
-      actionButton("sim1","generate new points...")
+      sliderInput("maxS","plot size:", min=0,max=50000,value=10000)
     ),
 
     mainPanel(
@@ -63,8 +65,6 @@ ui <- fluidPage(
                h5("In this section, many iterations of possible datasets are simulated under given Ricker and data parameters."),
                h5("True values (blue) can be compared to the true dispersion (black, estimated as the middle 80% of point estimates),
                   and estimated dispersion (red, estimated as the average of 80% bootstrap CI endpoints)."),
-               h5("NOTE: these results seem
-                  to be giving some dubious results and may not be correct yet!"),
                div(style="height: 70px;", sliderInput("metareps","Number of iterations:", min=10,max=1000,value=100,step=10, ticks=F)),
                div(style="height: 70px;", sliderInput("metaB","Number of bootstrap reps per iteration:", min=10,max=1000,value=100,step=10, ticks=F)),
                actionButton("runmeta","run meta-simulation..."),
@@ -114,11 +114,13 @@ server <- function(input, output) {
                 beta_boot=beta_boot[!impossible]))
   }
 
-  simulateSR <- function(lnalpha, beta, cvS, hrange, sig, N, phi) {
+  simulateSR1 <- function(lnalpha, beta, cvS, hrange, sig, N, phi, Sgoal, sigF) {             ##### add Sgoal and sigF to calls of this function
 
     # calculate lognormal sigma in measurement error for S from cv(S)
     siglog <- sqrt(log(cvS^2 + 1))            ############ make sure this is right!!!
     Seq <- lnalpha/beta
+    F1 <- -log(1-hrange[1])
+    F2 <- -log(1-hrange[2])
 
     # ----- initial values ----- #
     # initial value for S: Seq minus some harvest
@@ -133,7 +135,10 @@ server <- function(input, output) {
     R <- exp(fits+resids)*S
 
     # calculate initial year's harvest from initial R
-    H <- R*runif(1, hrange[1], hrange[2])
+    # H <- R*runif(1, hrange[1], hrange[2])
+    epsF <- rlnorm(1,0,sigF)
+    F1t <- F1*epsF
+    Rgoal <- Sgoal/exp(-F1t)
     Robs <- NA
 
     # ----- recursive portion ----- #
@@ -161,7 +166,49 @@ server <- function(input, output) {
     return(list(S=Sobs, R=Robs, Strue=S, Rtrue=R))
   }
 
-  metaSimulate <- function(lnalpha, beta, cvS, hrange, sig, N, phi, boot=T, reps=500, B=500) {
+  simulateSR <- function(lnalpha, beta, cvS, hrange, sig, N, phi, Sgoal, sigF) {             ##### add Sgoal and sigF to calls of this function
+    # calculate lognormal sigma in measurement error for S from cv(S)
+    siglog <- sqrt(log(cvS^2 + 1))            ############ make sure this is right!!!
+    Seq <- lnalpha/beta
+    F1 <- -log(1-hrange[1])
+    F2 <- -log(1-hrange[2])
+
+    # ----- initial values ----- #
+    # initial value for S: Seq minus some harvest
+    S <- Seq*runif(1, 1-hrange[2], 1-hrange[1])       ### this could be betterized, but I guess it's not so bad
+
+    # initial value for observed S
+    Shat <- S*rlnorm(1, sdlog=siglog)
+
+    # initializing all other values
+    redresid <- 0 ## should this be betterized?
+    E1R <- E2R <- R <- whiteresid <- epsF <- Rgoal <- F1t <- H <- Rhat <- lnRhatShat <- fittedR <- NA
+
+    # recursive portion...
+    for(i in 2:(N+1)) {
+      E1R[i] <- S[i-1]*exp(lnalpha - beta*S[i-1])
+      E2R[i] <- E1R[i]*exp(phi*redresid[i-1])
+      R[i] <- E2R[i]*rlnorm(1,0,sig)
+      redresid[i] <- log(R[i]/E1R[i])
+      whiteresid[i] <- log(R[i]/E2R[i])
+      epsF[i] <- rnorm(1,0,sigF)
+      F1t[i] <- F1*exp(epsF[i])
+      Rgoal[i] <- Sgoal/exp(-F1t[i])
+      S[i] <- ifelse(R[i]<Rgoal[i], R[i]*exp(-F1t[i]), Sgoal+(R[i]-Rgoal[i])*exp(-F2*exp(epsF[i])))
+      Shat[i] <- S[i]*rlnorm(1, sdlog=siglog)
+      H[i] <- R[i]-S[i]
+      Rhat[i] <- Shat[i]+H[i]
+      lnRhatShat[i] <- log(Rhat[i]/Shat[i])
+      # fittedR[i] <- S[i-1]*exp()
+    }
+
+    return(list(S=Shat[1:N],
+                R=Rhat[2:(N+1)],
+                Strue=S[1:N],
+                Rtrue=R[2:(N+1)]))
+  }
+
+  metaSimulate <- function(lnalpha, beta, cvS, hrange, sig, N, phi, Sgoal, sigF, boot=T, reps=500, B=500) {
     estimates <- cilo <- cihi <- as.data.frame(matrix(nrow=reps, ncol=6))
     names(estimates) <- names(cilo) <- names(cihi) <- c("lnalpha_p","beta","Smsy","Smax","Seq","MSY")
     withProgress(message = 'Calculation in progress',
@@ -174,7 +221,9 @@ server <- function(input, output) {
                                           hrange=hrange,
                                           sig=sig,
                                           N=N,
-                                          phi=phi)
+                                          phi=phi,
+                                          Sgoal=Sgoal,
+                                          sigF=sigF)
                      thefit <- fitRicker(S=thesim$S, R=thesim$R)
                      estimates$lnalpha_p[i] <- thefit$lnalpha_p_fit
                      estimates$beta[i] <- thefit$beta_fit
@@ -253,7 +302,7 @@ server <- function(input, output) {
     if(input$sim) {
       points(S, R)
       Rfit <- fitRicker(S=S, R=R)
-      for(i in 1:min(length(beta_boot),100)) curve(Ricker(x, lnalpha=lnalpha_boot[i], beta=beta_boot[i]), add=T, col=adjustcolor(2,alpha.f=.15))
+      for(i in 1:min(length(beta_boot),100)) curve(Ricker(x, lnalpha=lnalpha_boot[i], beta=beta_boot[i]), add=T, col=adjustcolor(2,alpha.f=.25))
       curve(Ricker(x, lnalpha=Rfit$lnalpha_fit, beta=Rfit$beta_fit), add=T, col=2)
       Seq_boot <- lnalpha_p_boot/beta_boot
       Smax_boot <- 1/beta_boot
@@ -282,7 +331,9 @@ server <- function(input, output) {
                         hrange=input$hrange,
                         sig=input$sig,
                         N=input$N,
-                        phi=input$phi)
+                        phi=input$phi,
+                        Sgoal=input$Sgoal,
+                        sigF=input$sigF)
     return(simSR)
   })
 
@@ -304,6 +355,8 @@ server <- function(input, output) {
                          sig=input$sig,
                          N=input$N,
                          phi=input$phi,
+                         Sgoal=input$Sgoal,
+                         sigF=input$sigF,
                          boot=T,
                          reps=input$metareps,
                          B=input$metaB)
@@ -409,6 +462,7 @@ server <- function(input, output) {
       }
       curve(Ricker(x, input$lnalpha, input$beta), add=T, col=4, lwd=1)
       Rfit <- fitRicker(S=sim()$S, R=sim()$R)
+      # print(Rfit)
       curve(Ricker(x, lnalpha=Rfit$lnalpha_fit, beta=Rfit$beta_fit), add=T, col=2)
       legend("topright",legend=c("True","Fit"),col=c(4,2),lwd=2)
 
@@ -419,7 +473,7 @@ server <- function(input, output) {
         points(sim()$Strue, logRStrue, pch=16, col=adjustcolor(4,alpha.f=.4))
         segments(sim()$Strue, logRStrue, sim()$S, logRS, col="grey")
       }
-      abline(Rfit$lnalpha, -Rfit$beta, col=2)
+      abline(Rfit$lnalpha_fit, -Rfit$beta_fit, col=2)
       abline(input$lnalpha, -input$beta, col=4)
       legend("topright",legend=c("True","Fit"),col=c(4,2),lwd=2)
 
