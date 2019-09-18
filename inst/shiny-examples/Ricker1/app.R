@@ -37,12 +37,12 @@ ui <- fluidPage(
                  # sliderInput("cvS","Measurement error cv(S):", min=0, max=0.5, value=0, step=.01, ticks=T),
                  # sliderInput("phi","Autocorrelation phi:", min=0, max=1, value=0, step=.01, ticks=T)
                  div(style="height: 70px;", sliderInput("N","Number of observations:", min=2, max=100, value=30, ticks=F)),
-                 div(style="height: 70px;", sliderInput("sig","Process error lognormal sigma:", min=0, max=1, value=0.3, step=.01, ticks=F)),
-                 div(style="height: 70px;", sliderInput("cvS","Measurement error cv(S):", min=0, max=0.5, value=0, step=.01, ticks=F)),
+                 div(style="height: 70px;", sliderInput("sigW","Process error lognormal sigma:", min=0, max=1, value=0.3, step=.01, ticks=F)),
+                 div(style="height: 70px;", sliderInput("sigS","Measurement error sigma_S:", min=0, max=0.5, value=0, step=.01, ticks=F)),
                  div(style="height: 70px;", sliderInput("phi","Autocorrelation phi:", min=0, max=1, value=0, step=.01, ticks=F)),
                  div(style="height: 70px;", sliderInput("hrange","Harv rates: typical and liberalized", min=0, max=1, value=c(0.25,0.75), step=.01, ticks=F)),
                  div(style="height: 70px;", sliderInput("Sgoal","S Goal for liberalization:", min=0, max=10000, value=2000, step=1, ticks=F)),
-                 div(style="height: 70px;", sliderInput("sigF","Harvest lognormal sigmaF:", min=0, max=1, value=0.4, step=.01, ticks=F))
+                 div(style="height: 70px;", sliderInput("sigF","Harvest lognormal sigma_F:", min=0, max=1, value=0.4, step=.01, ticks=F))
         )
       ),
       sliderInput("maxS","plot size:", min=0,max=50000,value=10000)
@@ -166,19 +166,21 @@ server <- function(input, output) {
     return(list(S=Sobs, R=Robs, Strue=S, Rtrue=R))
   }
 
-  simulateSR <- function(lnalpha, beta, cvS, hrange, sig, N, phi, Sgoal, sigF) {             ##### add Sgoal and sigF to calls of this function
+  simulateSR <- function(lnalpha, beta, sigS, hrange, sigW, N, phi, Sgoal, sigF) {             ##### add Sgoal and sigF to calls of this function
     # calculate lognormal sigma in measurement error for S from cv(S)
-    siglog <- sqrt(log(cvS^2 + 1))            ############ make sure this is right!!!
-    Seq <- lnalpha/beta
+    # siglog <- sqrt(log(cvS^2 + 1))            ############ make sure this is right!!!
+    lnalpha_p <- lnalpha + 0.5*sigW*sigW
+    Seq <- lnalpha_p/beta
     F1 <- -log(1-hrange[1])
     F2 <- -log(1-hrange[2])
+    # hrange <- 1-exp(-c(F1,F2))
 
     # ----- initial values ----- #
     # initial value for S: Seq minus some harvest
-    S <- Seq*runif(1, 1-hrange[2], 1-hrange[1])       ### this could be betterized, but I guess it's not so bad
+    S <- 900 #Seq*runif(1, 1-hrange[2], 1-hrange[1])       ### this could be betterized, but I guess it's not so bad
 
     # initial value for observed S
-    Shat <- S*rlnorm(1, sdlog=siglog)
+    Shat <- S*rlnorm(1, sdlog=sigS)
 
     # initializing all other values
     redresid <- 0 ## should this be betterized?
@@ -188,18 +190,17 @@ server <- function(input, output) {
     for(i in 2:(N+1)) {
       E1R[i] <- S[i-1]*exp(lnalpha - beta*S[i-1])
       E2R[i] <- E1R[i]*exp(phi*redresid[i-1])
-      R[i] <- E2R[i]*rlnorm(1,0,sig)
+      R[i] <- E2R[i]*rlnorm(1,0,sigW)
       redresid[i] <- log(R[i]/E1R[i])
       whiteresid[i] <- log(R[i]/E2R[i])
       epsF[i] <- rnorm(1,0,sigF)
       F1t[i] <- F1*exp(epsF[i])
       Rgoal[i] <- Sgoal/exp(-F1t[i])
       S[i] <- ifelse(R[i]<Rgoal[i], R[i]*exp(-F1t[i]), Sgoal+(R[i]-Rgoal[i])*exp(-F2*exp(epsF[i])))
-      Shat[i] <- S[i]*rlnorm(1, sdlog=siglog)
+      Shat[i] <- S[i]*rlnorm(1, sdlog=sigS)
       H[i] <- R[i]-S[i]
       Rhat[i] <- Shat[i]+H[i]
       lnRhatShat[i] <- log(Rhat[i]/Shat[i])
-      # fittedR[i] <- S[i-1]*exp()
     }
 
     return(list(S=Shat[1:N],
@@ -208,7 +209,7 @@ server <- function(input, output) {
                 Rtrue=R[2:(N+1)]))
   }
 
-  metaSimulate <- function(lnalpha, beta, cvS, hrange, sig, N, phi, Sgoal, sigF, boot=T, reps=500, B=500) {
+  metaSimulate <- function(lnalpha, beta, sigS, hrange, sigW, N, phi, Sgoal, sigF, boot=T, reps=500, B=500) {
     estimates <- cilo <- cihi <- as.data.frame(matrix(nrow=reps, ncol=6))
     names(estimates) <- names(cilo) <- names(cihi) <- c("lnalpha_p","beta","Smsy","Smax","Seq","MSY")
     withProgress(message = 'Calculation in progress',
@@ -217,9 +218,9 @@ server <- function(input, output) {
                      incProgress(i/reps)   ################
                      thesim <- simulateSR(lnalpha=lnalpha,
                                           beta=beta,
-                                          cvS=cvS,
+                                          sigS=sigS,
                                           hrange=hrange,
-                                          sig=sig,
+                                          sigW=sigW,
                                           N=N,
                                           phi=phi,
                                           Sgoal=Sgoal,
@@ -327,9 +328,9 @@ server <- function(input, output) {
     trick1 <- input$sim1
     simSR <- simulateSR(lnalpha=input$lnalpha,
                         beta=input$beta,
-                        cvS=input$cvS,
+                        sigS=input$sigS,
                         hrange=input$hrange,
-                        sig=input$sig,
+                        sigW=input$sigW,
                         N=input$N,
                         phi=input$phi,
                         Sgoal=input$Sgoal,
@@ -350,9 +351,9 @@ server <- function(input, output) {
     # if(input$sim) {# & input$radio>=2) {
     meta <- metaSimulate(lnalpha=input$lnalpha,
                          beta=input$beta,
-                         cvS=input$cvS,
+                         sigS=input$sigS,
                          hrange=input$hrange,
-                         sig=input$sig,
+                         sigW=input$sigW,
                          N=input$N,
                          phi=input$phi,
                          Sgoal=input$Sgoal,
@@ -456,7 +457,7 @@ server <- function(input, output) {
     if(input$sim) {
       par(mfrow=c(2,2), mar=c(4,4,2,2))
       plot(sim()$S, sim()$R, xlab="S", ylab="R", pch=16, col=adjustcolor(2,alpha.f=.4), xlim=c(0,input$maxS), ylim=c(0,input$maxS))
-      if(input$cvS>0) {
+      if(input$sigS>0) {
         points(sim()$Strue, sim()$Rtrue, pch=16, col=adjustcolor(4,alpha.f=.4))
         segments(sim()$Strue, sim()$Rtrue, sim()$S, sim()$R, col="grey")
       }
@@ -469,7 +470,7 @@ server <- function(input, output) {
       logRS <- log(sim()$R/sim()$S)
       logRStrue <- log(sim()$Rtrue/sim()$Strue)
       plot(sim()$S, logRS, xlab="S", ylab="log(R/S)", pch=16, col=adjustcolor(2,alpha.f=.4), xlim=c(0,max(sim()$S,sim()$Strue)), ylim=range(logRS,logRStrue,na.rm=T))
-      if(input$cvS>0) {
+      if(input$sigS>0) {
         points(sim()$Strue, logRStrue, pch=16, col=adjustcolor(4,alpha.f=.4))
         segments(sim()$Strue, logRStrue, sim()$S, logRS, col="grey")
       }
