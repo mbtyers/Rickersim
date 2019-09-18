@@ -177,7 +177,7 @@ server <- function(input, output) {
 
     # ----- initial values ----- #
     # initial value for S: Seq minus some harvest
-    S <- 900 #Seq*runif(1, 1-hrange[2], 1-hrange[1])       ### this could be betterized, but I guess it's not so bad
+    S <- Seq*runif(1, 1-hrange[2], 1-hrange[1])       ### this could be betterized, but I guess it's not so bad
 
     # initial value for observed S
     Shat <- S*rlnorm(1, sdlog=sigS)
